@@ -35,7 +35,41 @@ def run(opt):
     base_save_path = os.path.join(opt.output_dir, extraction_path)
     os.makedirs(base_save_path, exist_ok=True)
 
-    pnp = PNP(blip_diffusion_pipe, opt)
+    # Phase 3: Load and validate mask and beta parameters
+    mask = None
+    beta = opt.beta if hasattr(opt, 'beta') else 1.0
+    target_blocks = None
+    
+    # Validate beta range
+    if beta < 0.0 or beta > 1.0:
+        print(f"[WARNING] beta={beta} out of range [0.0, 1.0]. Clamping to range.")
+        beta = max(0.0, min(1.0, beta))
+    
+    # Load mask if provided
+    if hasattr(opt, 'mask_path') and opt.mask_path is not None:
+        try:
+            # Load reference content image to get dimensions for mask
+            if len(content_path) > 0:
+                ref_img = Image.open(content_path[0]).convert('RGB')
+                ref_h, ref_w = ref_img.size[::-1]  # PIL returns (W, H), we need (H, W)
+                ref_h, ref_w = ref_img.height, ref_img.width
+                
+                # Load and prepare mask
+                mask = load_and_prepare_mask(opt.mask_path, ref_h, ref_w, device=opt.device)
+                print(f"[MASK] Successfully loaded mask from {opt.mask_path}")
+            else:
+                print("[WARNING] No content images found, cannot validate mask dimensions. Skipping mask.")
+        except Exception as e:
+            print(f"[ERROR] Failed to load mask: {e}. Proceeding without mask.")
+            mask = None
+    
+    # Parse target blocks if provided
+    if hasattr(opt, 'target_blocks') and opt.target_blocks is not None:
+        target_blocks = [b.strip() for b in opt.target_blocks.split(',')]
+        print(f"[TARGET_BLOCKS] Selective targeting: {target_blocks}")
+
+    # Create PNP with enhanced parameters
+    pnp = PNP(blip_diffusion_pipe, opt, mask=mask, beta=beta, target_blocks=target_blocks)
 
     all_content_latents = []
     for content_file in content_path:
@@ -128,6 +162,15 @@ if __name__ == "__main__":
     
     parser.add_argument('--inversion_prompt', type=str, default='')
     parser.add_argument('--extract-reverse', default=False, action='store_true', help="extract features during the denoising process")
+    
+    # Phase 3: Enhanced control parameters
+    parser.add_argument('--beta', type=float, default=1.0, 
+                        help="style strength multiplier [0.0 = no style, 1.0 = full], default 1.0")
+    parser.add_argument('--mask_path', type=str, default=None,
+                        help="path to binary mask image (PNG/NPY) for region-based styling, optional")
+    parser.add_argument('--target_blocks', type=str, default=None,
+                        help="comma-separated U-Net block names for selective masking, e.g., 'up_blocks.0,up_blocks.1', optional")
+    
     opt = parser.parse_args()
 
     run(opt)

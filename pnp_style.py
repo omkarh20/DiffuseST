@@ -28,17 +28,54 @@ def load_img1(self, image_path):
 
 
 class PNP(nn.Module):
-    def __init__(self, pipe, config):
+    def __init__(self, pipe, config, mask=None, beta=1.0, target_blocks=None):
+        """
+        Initialize PNP with optional mask and beta scaling support.
+        
+        Args:
+            pipe: BLIP diffusion pipeline
+            config: config object with device, ddim_steps, ddpm_steps, alpha, etc.
+            mask: torch.Tensor, binary spatial mask (1, 1, H, W), optional
+            beta: float, style strength multiplier [0.0 = no style, 1.0 = full], default 1.0
+            target_blocks: list of block names for selective masking, e.g., ['up_blocks.1', 'up_blocks.2']
+                          If None, applies to all blocks (backward compatible)
+        """
         super().__init__()
         self.config = config
         self.device = config.device
         self.pipe = pipe
+        self.mask = mask
+        self.beta = beta
+        self.target_blocks = target_blocks
         self.pipe.scheduler.set_timesteps(config.ddim_steps, device=self.device)
+        
+        # Log enhanced features if enabled
+        if mask is not None or beta < 1.0:
+            print(f"[PNP] Enhanced mode: beta={beta}, mask={'active' if mask is not None else 'none'}, target_blocks={target_blocks}")
 
     def init_pnp(self, conv_injection_t, qk_injection_t):
+        """
+        Initialize PNP hooks with optional mask and beta scaling.
+        
+        Returns:
+            content_step: timesteps for style injection
+        """
         self.qk_injection_timesteps = self.pipe.scheduler.timesteps[:qk_injection_t] if qk_injection_t >= 0 else []
         self.conv_injection_timesteps = self.pipe.scheduler.timesteps[:conv_injection_t] if conv_injection_t >= 0 else []
-        register_attention_control_efficient(self.pipe, self.qk_injection_timesteps)
+        
+        # Use enhanced registration if mask or beta scaling is enabled
+        if self.mask is not None or self.beta < 1.0:
+            register_attention_control_with_mask_and_scaling(
+                self.pipe, 
+                self.qk_injection_timesteps,
+                mask=self.mask,
+                beta=self.beta,
+                target_blocks=self.target_blocks
+            )
+        else:
+            # Fall back to standard registration for backward compatibility
+            register_attention_control_efficient(self.pipe, self.qk_injection_timesteps)
+        
         register_conv_control_efficient(self.pipe, self.conv_injection_timesteps)
         return self.qk_injection_timesteps
     
